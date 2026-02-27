@@ -1,6 +1,7 @@
 package subprocess
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"syscall"
@@ -17,7 +18,9 @@ func isProcessAlreadyFinishedError(err error) bool {
 	return strings.Contains(errStr, "process already finished") ||
 		strings.Contains(errStr, "process already released") ||
 		strings.Contains(errStr, "no child processes") ||
-		strings.Contains(errStr, "signal: killed")
+		strings.Contains(errStr, "signal: killed") ||
+		errors.Is(err, syscall.ESRCH) ||
+		errors.Is(err, syscall.EPERM)
 }
 
 // terminateProcess implements the 5-second SIGTERM -> SIGKILL sequence
@@ -26,15 +29,14 @@ func (t *Transport) terminateProcess() error {
 		return nil
 	}
 
-	// Send SIGTERM
-	if err := t.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	// Send SIGTERM to the entire process group
+	if err := syscall.Kill(-t.cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		// If process is already finished, that's success
 		if isProcessAlreadyFinishedError(err) {
 			return nil
 		}
 		// If SIGTERM fails for other reasons, try SIGKILL immediately
-		killErr := t.cmd.Process.Kill()
-		if killErr != nil && !isProcessAlreadyFinishedError(killErr) {
+		if killErr := syscall.Kill(-t.cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !isProcessAlreadyFinishedError(killErr) {
 			return killErr
 		}
 		return nil // Don't return error for expected termination
@@ -60,7 +62,7 @@ func (t *Transport) terminateProcess() error {
 		return err
 	case <-time.After(terminationTimeoutSeconds * time.Second):
 		// Force kill after 5 seconds
-		if killErr := t.cmd.Process.Kill(); killErr != nil && !isProcessAlreadyFinishedError(killErr) {
+		if killErr := syscall.Kill(-t.cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !isProcessAlreadyFinishedError(killErr) {
 			return killErr
 		}
 		// Wait for process to exit after kill
@@ -68,7 +70,7 @@ func (t *Transport) terminateProcess() error {
 		return nil
 	case <-t.ctx.Done():
 		// Context canceled - force kill immediately
-		if killErr := t.cmd.Process.Kill(); killErr != nil && !isProcessAlreadyFinishedError(killErr) {
+		if killErr := syscall.Kill(-t.cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !isProcessAlreadyFinishedError(killErr) {
 			return killErr
 		}
 		// Wait for process to exit after kill, but don't return context error

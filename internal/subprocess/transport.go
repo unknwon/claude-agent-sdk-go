@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/severity1/claude-agent-sdk-go/internal/cli"
@@ -127,7 +128,16 @@ func (t *Transport) Connect(ctx context.Context) error {
 		args = cli.BuildCommand(t.cliPath, opts, t.closeStdin)
 	}
 	//nolint:gosec // G204: This is the core CLI SDK functionality - subprocess execution is required
-	t.cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 10 * time.Second
+	t.cmd = cmd
 
 	// Set up environment and apply to command
 	t.cmd.Env = t.buildEnvironment()
